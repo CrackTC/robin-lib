@@ -11,6 +11,7 @@ import { backup, error } from "/utils.ts";
 import { HandlerConfig } from "/handlers/common.ts";
 import { get_group_event_handler } from "/handlers/message/group/index.ts";
 import { GroupEventHandler } from "/handlers/message/group/types.ts";
+import { rate_limit, wrap } from "/wrappers.ts";
 
 const NAME = "user_rank";
 const config = new HandlerConfig(NAME, {
@@ -34,9 +35,8 @@ const get_top_n = (group_id: number, n: number) =>
   db.query<[number, number]>(
     `
     SELECT id, COUNT(*) AS count
-    FROM ${NAME}
+    FROM (SELECT * FROM ${NAME} WHERE group_id = ?)
     GROUP BY id
-    HAVING group_id = ?
     ORDER BY count DESC
     LIMIT ?`,
     [group_id, n],
@@ -94,24 +94,43 @@ const get_description = async (group_id: number) => {
 const handle_func = (event: GroupMessageEvent) => {
   const group_id = event.group_id;
   const id = event.sender.user_id;
+  let message;
+  if (typeof event.message === "string") {
+    message = event.message;
+  } else {
+    message = event.message.map((seg) =>
+      seg.type == "text" ? seg.data.text : ""
+    ).join(" ");
+  }
+
+  if (message.trim() == "/rank") send_description(group_id);
   insert(group_id, id);
 };
 
-const send_description = async (group_id: number) => {
-  const desc = await get_description(group_id);
-  clear_group(group_id);
+const send_description =
+  wrap<(id: number) => Promise<void> | void>(async (group_id: number) => {
+    const desc = await get_description(group_id);
+    if (!desc) {
+      error(`get description for ${group_id} failed`);
+      return;
+    }
 
-  if (!desc) {
-    error(`get description for ${group_id} failed`);
-    return;
-  }
-
-  const success = await send_group_message(group_id, [mk_text(desc)]);
-  if (!success) {
-    error("send description failed");
-    backup(desc, `${NAME}.txt`);
-  }
-};
+    const success = await send_group_message(group_id, [mk_text(desc)]);
+    if (!success) {
+      error("send description failed");
+      backup(desc, `${NAME}.txt`);
+    }
+  }).with(rate_limit({
+    get_id: (id) => id,
+    get_limit: () => 1,
+    get_period: () => 60 * 1000,
+    exceed_action: (arg, wait_seconds) => {
+      send_group_message(
+        arg,
+        [mk_text(`太快啦>_<，请等待 ${wait_seconds} 秒后再试`)],
+      );
+    },
+  })).call;
 
 let job: Cron;
 
@@ -125,7 +144,12 @@ export default new GroupEventHandler({
 
     if (job !== undefined) job.stop();
     job = new Cron(config.value.cron, { name: NAME }, () => {
-      if (info.enabled) info.groups.forEach(send_description);
+      if (info.enabled) {
+        info.groups.forEach((id: number) => {
+          send_description(id);
+          clear_group(id);
+        });
+      }
     });
   },
 });

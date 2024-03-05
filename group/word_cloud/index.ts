@@ -1,9 +1,9 @@
 import Cron from "https://deno.land/x/croner@8.0.0/src/croner.js";
 import db from "/db.ts";
-import { mk_image, send_group_message } from "/onebot/index.ts";
+import { mk_image, mk_text, send_group_message } from "/onebot/index.ts";
 import { GroupMessageEvent } from "/onebot/types/event/message.ts";
 import { backup, error } from "/utils.ts";
-import { task_queue, wrap } from "/wrappers.ts";
+import { rate_limit, task_queue, wrap } from "/wrappers.ts";
 import { HandlerConfig } from "/handlers/common.ts";
 import { get_group_event_handler } from "/handlers/message/group/index.ts";
 import { GroupEventHandler } from "/handlers/message/group/types.ts";
@@ -56,6 +56,8 @@ const handle_func = (event: GroupMessageEvent) => {
       seg.type == "text" ? seg.data.text : ""
     ).join(" ");
   }
+
+  if (message.trim() == "/wordcloud") send_queued(group_id);
   insert(group_id, message);
 };
 
@@ -69,7 +71,6 @@ const filter = (message: string) => {
 
 const send_word_cloud = async (group_id: number) => {
   const messages = get_group_messages(group_id);
-  clear_group(group_id);
   if (messages.length === 0) return;
 
   config.value.cloud_options.text = filter(messages.join("\n"));
@@ -95,7 +96,18 @@ const send_word_cloud = async (group_id: number) => {
 
 let job: Cron;
 
-const send_queued = wrap(send_word_cloud).with(task_queue).call;
+const send_queued =
+  wrap<(id: number) => Promise<void> | void>(send_word_cloud).with(rate_limit({
+    get_id: (id) => id,
+    get_limit: () => 1,
+    get_period: () => 60 * 1000,
+    exceed_action: (arg, wait_seconds) => {
+      send_group_message(
+        arg,
+        [mk_text(`太快啦>_<，请等待 ${wait_seconds} 秒后再试`)],
+      );
+    },
+  })).with(task_queue).call;
 
 const word_cloud = new GroupEventHandler({
   name: NAME,
@@ -113,7 +125,12 @@ const word_cloud = new GroupEventHandler({
 
     if (job !== undefined) job.stop();
     job = new Cron(config.value.cron, { name: NAME }, () => {
-      if (info.enabled) info.groups.forEach(send_queued);
+      if (info.enabled) {
+        info.groups.forEach((id: number) => {
+          send_queued(id);
+          clear_group(id);
+        });
+      }
     });
   },
 });
