@@ -145,8 +145,8 @@ export default new GroupEventHandler({
     if (job !== undefined) job.stop();
     job = new Cron(config.value.cron, { name: NAME }, () => {
       if (info.enabled) {
-        info.groups.forEach((id: number) => {
-          send_description(id);
+        info.groups.forEach(async (id: number) => {
+          await send_description(id);
           clear_group(id);
         });
       }
