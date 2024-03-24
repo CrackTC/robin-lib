@@ -4,11 +4,12 @@ import { HeartbeatEvent } from "/onebot/types/event/meta.ts";
 import { heartbeat_start } from "/utils.ts";
 import { setup_ws_api, setup_ws_event, WS_EVENT } from "/ws.ts";
 import { HeartbeatEventHandler } from "/handlers/meta_event/heartbeat/types.ts";
+import { get_config } from "/config.ts";
 
 const handle_func = (event: HeartbeatEvent) => {
   const beat = heartbeat_start(event.interval, () => {
     setup_ws_event();
-    setup_ws_api();
+    if (!get_config().http_api_call) setup_ws_api();
   });
   const listener = (msg: MessageEvent) => {
     const event: Event = JSON.parse(msg.data);
